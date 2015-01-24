@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>WebGL Tut 14</title>
+
+<script type="text/javascript" src="glMatrix-0.9.5.min.js"></script>
+<script type="text/javascript" src="webgl-utils.js"></script>
+
+<!-- Fragment Shader -->
+<script id="shader-fs" type="x-shader/x-fragment">
+    precision mediump float;
+
+    varying vec2 vTextureCoord;
+    varying vec3 vTransformedNormal;
+    varying vec4 vPosition;
+
+    uniform float uMaterialShininess;
+
+    uniform bool uShowSpecularHighlights;
+    uniform bool uUseLighting;
+    uniform bool uUseTextures;
+
+    uniform vec3 uAmbientColor;
+
+    uniform vec3 uPointLightingLocation;
+    uniform vec3 uPointLightingSpecularColor;
+    uniform vec3 uPointLightingDiffuseColor;
+
+    uniform sampler2D uSampler;
+
+    void main(void) {
+        vec3 lightWeighting;
+        if (!uUseLighting)
+            lightWeighting = vec3(1.0, 1.0, 1.0);
+        else {
+            vec3 lightDirection = normalize(uPointLightingLocation - vPosition.xyz);
+            vec3 normal = normalize(vTransformedNormal);
+
+            float specularLightWeighting = 0.0;
+            if(uShowSpecularHighlights) {
+                vec3 eyeDirection = normalize(-vPosition.xyz);
+                vec3 reflectionDirection = reflect(-lightDirection, normal);
+                specularLightWeighting = pow(max(dot(reflectionDirection, eyeDirection), 0.0), uMaterialShininess);
+            }
+            float diffuseLightWeighting = max(dot(normal, lightDirection), 0.0);
+            lightWeighting = uAmbientColor + (diffuseLightWeighting * uPointLightingDiffuseColor) + (specularLightWeighting * uPointLightingSpecularColor);
+        }
+
+        vec4 fragmentColor;
+        if (uUseTextures)
+            fragmentColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+        else
+            fragmentColor = vec4(1.0, 1.0, 1.0, 1.0);
+        gl_FragColor = vec4(fragmentColor.rgb * lightWeighting, fragmentColor.a);
+    }
+</script>
+
+<!-- Vertex Shader -->
+<script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 aVertexPosition;
+    attribute vec3 aVertexNormal;
+    attribute vec2 aTextureCoord;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+    uniform mat3 uNMatrix;
+
+    varying vec2 vTextureCoord;
+    varying vec3 vTransformedNormal;
+    varying vec4 vPosition;
+
+    void main(void) {
+        vPosition = uMVMatrix * vec4(aVertexPosition, 1.0);
+        gl_Position = uPMatrix * vPosition;
+        vTextureCoord = aTextureCoord;
+        vTransformedNormal = uNMatrix * aVertexNormal;
+    }
+</script>
+
+<script type="text/javascript">
+	var gl;
+	var teapotVertexPositionBuffer;
+	var teapotVertexTextureCoordBuffer;
+	var teapotVertexNormalBuffer;
+	var teapotVertexIndexBuffer;
+	var mvMatrix = mat4.create();
+	var pMatrix = mat4.create();
+	var mvMatrixStack = [];
+	var shaderProgram;
+	var lastTime = 0;
+	var earthTexture;
+	var galvanizedTexture;
+    var teapotAngle = 0;
+
+	function initGL(canvas) {
+		try{
+			gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+			gl.viewPortWidth = canvas.width;
+			gl.viewPortHeight = canvas.height;
+		} catch(e) {}
+
+		if(!gl) {
+			alert("Could not initialise WebGL");
+		}
+	}
+
+	function getShader(gl, id) {
+		var shaderScript, theSource, currentChild, shader;
+  
+		shaderScript = document.getElementById(id);
+
+		if (!shaderScript) {
+		return null;
+		}
+
+		theSource = "";
+		currentChild = shaderScript.firstChild;
+
+		while(currentChild) {
+			if (currentChild.nodeType == currentChild.TEXT_NODE) {
+			  theSource += currentChild.textContent;
+			}
+
+			currentChild = currentChild.nextSibling;
+		}
+
+		if(shaderScript.type == "x-shader/x-fragment")
+			shader = gl.createShader(gl.FRAGMENT_SHADER);
+		else if(shaderScript.type == "x-shader/x-vertex")
+			shader = gl.createShader(gl.VERTEX_SHADER);
+		else
+			return null;
+
+		gl.shaderSource(shader, theSource);
+		gl.compileShader(shader);
+
+		if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+			alert(gl.getShaderInfoLog(shader));
+			return null;
+		}
+
+		return shader;			
+	}
+
+	function initShaders() {
+        var fragmentShader = getShader(gl, "shader-fs");
+        var vertexShader = getShader(gl, "shader-vs");
+
+        shaderProgram = gl.createProgram();
+		gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+        shaderProgram.vertexNormalAttribute = gl.getAttribLocation(shaderProgram, "aVertexNormal");
+        gl.enableVertexAttribArray(shaderProgram.vertexNormalAttribute);
+
+        shaderProgram.textureCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+        gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute);
+
+        shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+        shaderProgram.nMatrixUniform = gl.getUniformLocation(shaderProgram, "uNMatrix");
+        shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+        shaderProgram.materialShininessUniform = gl.getUniformLocation(shaderProgram, "uMaterialShininess");
+        shaderProgram.showSpecularHighlightsUniform = gl.getUniformLocation(shaderProgram, "uShowSpecularHighlights");
+        shaderProgram.useTexturesUniform = gl.getUniformLocation(shaderProgram, "uUseTextures");
+        shaderProgram.useLightingUniform = gl.getUniformLocation(shaderProgram, "uUseLighting");
+        shaderProgram.ambientColorUniform = gl.getUniformLocation(shaderProgram, "uAmbientColor");
+        shaderProgram.pointLightingLocationUniform = gl.getUniformLocation(shaderProgram, "uPointLightingLocation");
+        shaderProgram.pointLightingSpecularColorUniform = gl.getUniformLocation(shaderProgram, "uPointLightingSpecularColor");
+        shaderProgram.pointLightingDiffuseColorUniform = gl.getUniformLocation(shaderProgram, "uPointLightingDiffuseColor");
+	}
+
+	function handleLoadedTexture(texture) {
+		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+        gl.generateMipmap(gl.TEXTURE_2D);
+
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    function initTextures() {
+		earthTexture = gl.createTexture();
+        earthTexture.image = new Image();
+        earthTexture.image.onload = function () {
+            handleLoadedTexture(earthTexture)
+        }
+
+        //IMPORTANT: image size MUST BE in POWER-OF-2!!!
+        earthTexture.image.src = "earth.jpg";
+
+        galvanizedTexture = gl.createTexture();
+        galvanizedTexture.image = new Image();
+        galvanizedTexture.image.onload = function () {
+            handleLoadedTexture(galvanizedTexture)
+        }
+
+        //IMPORTANT: image size MUST BE in POWER-OF-2!!!
+        galvanizedTexture.image.src = "arroway.de_metal+structure+06_d100_flat.jpg";
+	}
+
+    function degToRad(degrees) {
+    	return (degrees / 180) * Math.PI;
+    }
+
+    function mvPushMatrix() {
+        var copy = mat4.create();
+        mat4.set(mvMatrix, copy);
+        mvMatrixStack.push(copy);
+    }
+
+    function mvPopMatrix() {
+        if (mvMatrixStack.length == 0) {
+            throw "Invalid popMatrix!";
+        }
+        mvMatrix = mvMatrixStack.pop();
+    }
+
+	function setMatrixUniforms() {
+		gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+		gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+
+		var normalMatrix = mat3.create();
+        mat4.toInverseMat3(mvMatrix, normalMatrix);
+        mat3.transpose(normalMatrix);
+        gl.uniformMatrix3fv(shaderProgram.nMatrixUniform, false, normalMatrix);
+	}
+
+    function handleLoadedTeapot(teapotData) {
+        teapotVertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexPositionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapotData.vertexPositions), gl.STATIC_DRAW);
+        teapotVertexPositionBuffer.itemSize = 3;
+        teapotVertexPositionBuffer.numItems = teapotData.vertexPositions.length / 3;
+
+        teapotVertexNormalBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexNormalBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapotData.vertexNormals), gl.STATIC_DRAW);
+        teapotVertexNormalBuffer.itemSize = 3;
+        teapotVertexNormalBuffer.numItems = teapotData.vertexNormals.length / 3;
+
+        teapotVertexTextureCoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexTextureCoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapotData.vertexTextureCoords), gl.STATIC_DRAW);
+        teapotVertexTextureCoordBuffer.itemSize = 2;
+        teapotVertexTextureCoordBuffer.numItems = teapotData.vertexTextureCoords.length / 2;
+
+        teapotVertexIndexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, teapotVertexIndexBuffer);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(teapotData.indices), gl.STATIC_DRAW);
+        teapotVertexIndexBuffer.itemSize = 1;
+        teapotVertexIndexBuffer.numItems = teapotData.indices.length;
+
+        document.getElementById("loadingText").textContent = "";
+    }
+
+	function loadTeapot() {
+        var request = new XMLHttpRequest();
+        request.open("GET", "Teapot.json");
+        request.onreadystatechange = function() {
+            //if file is completely loaded
+            if(request.readyState == 4)
+                handleLoadedTeapot(JSON.parse(request.responseText));
+        }
+        request.send();
+    }
+
+	function drawScene() {
+		gl.viewport(0, 0, gl.viewPortWidth, gl.viewPortHeight);
+		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        if (teapotVertexPositionBuffer == null || teapotVertexNormalBuffer == null || teapotVertexTextureCoordBuffer == null || teapotVertexIndexBuffer == null) {
+            return;
+        }
+
+		//FOV, aspect ratio, near clipping plane, far clipping plane, projection matrix
+		mat4.perspective(45, gl.viewPortWidth / gl.viewPortHeight, 0.1, 100.0, pMatrix);
+
+        //Toggle to show specular highlights or not
+        var specularHighlights = document.getElementById("specular").checked;
+        gl.uniform1i(shaderProgram.showSpecularHighlightsUniform, specularHighlights);
+
+		var lighting = document.getElementById("lighting").checked;
+		gl.uniform1i(shaderProgram.useLightingUniform, lighting);
+		if(lighting) {
+			//Push ambient light color to vertex shader
+			gl.uniform3f(
+				shaderProgram.ambientColorUniform,
+				parseFloat(document.getElementById("ambientR").value),
+				parseFloat(document.getElementById("ambientG").value),
+				parseFloat(document.getElementById("ambientB").value)
+			);
+
+			//Push point light location to vertex shader
+			gl.uniform3f(
+				shaderProgram.pointLightingLocationUniform,
+				parseFloat(document.getElementById("pointX").value),
+				parseFloat(document.getElementById("pointY").value),
+				parseFloat(document.getElementById("pointZ").value)
+			);
+
+			//Push point light specular color to vertex shader
+			gl.uniform3f(
+				shaderProgram.pointLightingSpecularColorUniform,
+				parseFloat(document.getElementById("pointSpecularR").value),
+				parseFloat(document.getElementById("pointSpecularG").value),
+				parseFloat(document.getElementById("pointSpecularB").value)
+			);
+
+            //Push point light diffuse color to vertex shader
+            gl.uniform3f(
+                shaderProgram.pointLightingDiffuseColorUniform,
+                parseFloat(document.getElementById("pointDiffuseR").value),
+                parseFloat(document.getElementById("pointDiffuseG").value),
+                parseFloat(document.getElementById("pointDiffuseB").value)
+            );
+		}
+
+        var texture = document.getElementById("texture").value;
+        gl.uniform1i(shaderProgram.useTexturesUniform, texture != "none");
+
+		mat4.identity(mvMatrix);
+		mat4.translate(mvMatrix, [0, 0, -40]);
+        mat4.rotate(mvMatrix, degToRad(23.4), [1, 0, -1]);
+        mat4.rotate(mvMatrix, degToRad(teapotAngle), [0, 1, 0]);
+		
+		gl.activeTexture(gl.TEXTURE0);
+        if (texture == "earth") {
+            gl.bindTexture(gl.TEXTURE_2D, earthTexture);
+        } else if (texture == "galvanized") {
+            gl.bindTexture(gl.TEXTURE_2D, galvanizedTexture);
+        }
+        gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+        gl.uniform1f(shaderProgram.materialShininessUniform, parseFloat(document.getElementById("shininess").value));
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, teapotVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexTextureCoordBuffer);
+        gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, teapotVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexNormalBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, teapotVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, teapotVertexIndexBuffer);
+        setMatrixUniforms();
+        gl.drawElements(gl.TRIANGLES, teapotVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+	}
+
+	function animate() {
+		var currentTime = new Date().getTime();
+		if(lastTime != 0) {
+			var elapsed = currentTime - lastTime;
+
+			teapotAngle += 0.05 * elapsed;
+		}
+		lastTime = currentTime;
+	}
+
+	function tick() {
+		requestAnimFrame(tick);
+		drawScene();
+		animate();
+	}
+
+	function webGLStart() {
+		var canvas = document.getElementById("canvas");
+
+		initGL(canvas);
+		initShaders();
+		initTextures();
+        loadTeapot();
+
+		gl.clearColor(0.0, 0.0, 0.0, 1.0);
+		gl.enable(gl.DEPTH_TEST);
+
+		tick();
+	}
+</script>
+
+<style type="text/css">
+	#canvas {
+		border: 1px solid #000000;
+	}
+
+    #loadingtext {
+        position: absolute;
+        top: 250px;
+        left: 150px;
+        font-size: 2em;
+        color: white;
+    }
+
+	#sidebar {
+		position: absolute;
+		top: 30px;
+		bottom: 30px;
+		right: 30px;
+		width: 500px;
+		border-left: solid;
+		padding-left: 30px;
+	}
+
+	#ambient, #point, #material {
+		border: 0;
+	}
+
+	th {
+		text-align: left;
+	}
+
+	input[type="text"] {
+    	width: 50px;
+	}
+</style>
+
+</head>
+
+<body onload="webGLStart();">
+	<header>
+		<h1>WebGL Tut 14</h1>
+		<div>Specular highlights and loading a JSON model with WebGL</div>
+	</header></br>
+	
+	<article>
+		<canvas id="canvas" width="700" height="500"></canvas>
+        <div id="loadingText">Loading world...</div></br>
+	</article></br>
+
+	<section id="sidebar">
+		<article>
+            <input id="specular" type="checkbox" checked="checked"> Show Specular Highlight</input></br>
+			<input id="lighting" type="checkbox" checked="checked"> Use Lighting</input></br>
+            
+            Texture:
+            <select id="texture">
+                <option value="none">None</option>
+                <option selected value="galvanized">Galvanized</option>
+                <option value="earth">Earth</option>
+            </select><br/>
+		</article></br>
+
+        <article>
+            <b><u>Material</u></b>
+            <table id="material">
+                <tr>
+                    <td>Shininess: <input type="text" id="shininess" value="32.0"></input>
+                </tr>
+            </table>
+        </article></br>
+
+		<article>
+			<b><u>Point Lighting</u></b>
+			<table id="point">
+				<tr>
+					<th>Location</th>
+				</tr>
+				<tr>
+					<td>X: <input type="text" id="pointX" value="-10.0">, </input>
+					<td>Y: <input type="text" id="pointY" value="4.0">, </input>
+					<td>Z: <input type="text" id="pointZ" value="-20.0"></input>
+				</tr>
+				<tr>
+					<th>Specular Color</th>
+				</tr>
+				<tr>
+					<td>R: <input type="text" id="pointSpecularR" value="0.8">, </input>
+					<td>G: <input type="text" id="pointSpecularG" value="0.8">, </input>
+					<td>B: <input type="text" id="pointSpecularB" value="0.8"></input>
+				</tr>
+                <tr>
+                    <th>Diffuse Color</th>
+                </tr>
+                <tr>
+                    <td>R: <input type="text" id="pointDiffuseR" value="0.8">, </input>
+                    <td>G: <input type="text" id="pointDiffuseG" value="0.8">, </input>
+                    <td>B: <input type="text" id="pointDiffuseB" value="0.8"></input>
+                </tr>
+			</table>
+		</article></br>
+		
+		<article>
+			<b><u>Ambient Lighting</u></b>
+            <table id="ambient">
+                <tr>
+                    <th>Color</th>
+                </tr>
+                <tr>
+                    <td>R: <input type="text" id="ambientR" value="0.2">, </input>
+                    <td>G: <input type="text" id="ambientG" value="0.2">, </input>
+                    <td>B: <input type="text" id="ambientB" value="0.2"></input>
+                </tr>
+            </table>
+        </article>
+	</section>
+	
+	<footer>
+		Reference: <a href="http://learningwebgl.com/blog/?p=1658">WebGL Lesson 14 - Specular highlights and loading a JSON model</a>
+	</footer>
+	
+</body>
+</html>
